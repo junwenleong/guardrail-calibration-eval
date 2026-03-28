@@ -2,21 +2,23 @@
 
 ## Overview
 
-This framework measures whether LLM safety guardrail confidence scores remain calibrated under controlled synthetic distribution shift, targeting APAC deployment contexts. The system evaluates 5 open-source guardrails (4-bit quantized) and 1 commercial API guardrail across 5 distribution shift axes, producing calibration curves, ECE with bootstrap CIs, Brier Score decomposition, and operational threshold analysis.
+This framework measures whether LLM safety guardrail confidence scores remain calibrated under controlled synthetic distribution shift, targeting APAC deployment contexts. The system evaluates 6 open-source guardrails (5 via HuggingFace Transformers with 4-bit quantization, 1 via Ollama) across 5 distribution shift axes, producing calibration curves, ECE with bootstrap CIs, Brier Score decomposition, and operational threshold analysis. All models run locally with zero API costs.
 
 The core insight driving this design: companies set auto-block thresholds based on confidence scores, but nobody has systematically measured whether those scores are reliable under distribution shift. A guardrail reporting 0.9 confidence should be correct ~90% of the time — this framework measures whether that holds.
 
 ### Key Design Decisions
 
-1. **Three-way confidence source stratification**: `logits_softmax`, `native_safety_score`, and `api_score` are treated as distinct confidence source types. Models within the same type are comparable; cross-type comparisons require explicit caveats. OpenAI Moderation is a separate practitioner reference.
-2. **2-token probability mass reporting and filtering**: All logit-based adapters report raw 2-token mass vs full vocabulary. When mass < 0.5, the normalized confidence is flagged as artificially inflated. The CalibrationAnalyzer computes metrics both with and without low-mass items, and reports the fraction of items affected.
-3. **Axis 3 is fundamentally different**: Uses graded harmfulness + Spearman correlation, not binary ECE. Indirection genuinely changes risk profile.
-4. **Adaptive bin count**: M = max(5, min(15, floor(N/15))) prevents bin starvation on small subsets.
-5. **All local model results are for "4-bit quantized versions"**: Quantization affects logit distributions and therefore calibration. A quantization impact baseline (Req 8b) measures this effect.
-6. **Brier Score uncertainty fixed at 0.25**: Forced 50/50 balance means the uncertainty component is constant — focus is on calibration + resolution.
-7. **Prompt templating**: Each adapter applies model-specific chat templates before inference. Raw text is never passed directly to instruction-tuned models.
-8. **Atomic checkpointing**: Write-then-rename pattern prevents Parquet corruption on crash.
-9. **Class-conditional ECE in primary results**: Both overall and class-conditional ECE are required outputs in all primary results tables and visualizations.
+1. **All-local evaluation with zero API costs**: 5 guardrails load via HuggingFace Transformers (4-bit quantized), 1 guardrail (ShieldGemma-9B) loads via Ollama. Dataset generation and validation use Ollama (qwen2.5:14b). No commercial APIs, no rate limits, fully reproducible.
+2. **Three-way confidence source stratification**: `logits_softmax`, `native_safety_score`, and `api_score` are treated as distinct confidence source types. Models within the same type are comparable; cross-type comparisons require explicit caveats. All 6 guardrails use logit-based confidence, enabling direct comparison.
+3. **2-token probability mass reporting and filtering**: All logit-based adapters report raw 2-token mass vs full vocabulary. When mass < 0.5, the normalized confidence is flagged as artificially inflated. The CalibrationAnalyzer computes metrics both with and without low-mass items, and reports the fraction of items affected.
+4. **Axis 3 is fundamentally different**: Uses graded harmfulness + Spearman correlation, not binary ECE. Indirection genuinely changes risk profile.
+5. **Adaptive bin count**: M = max(5, min(15, floor(N/15))) prevents bin starvation on small subsets.
+6. **All local model results are for "4-bit quantized versions"**: Quantization affects logit distributions and therefore calibration. A quantization impact baseline (Req 8b) measures this effect.
+7. **Brier Score uncertainty fixed at 0.25**: Forced 50/50 balance means the uncertainty component is constant — focus is on calibration + resolution.
+8. **Prompt templating**: Each adapter applies model-specific chat templates before inference. Raw text is never passed directly to instruction-tuned models.
+9. **Atomic checkpointing**: Write-then-rename pattern prevents Parquet corruption on crash.
+10. **Class-conditional ECE in primary results**: Both overall and class-conditional ECE are required outputs in all primary results tables and visualizations.
+11. **Parallel loading for Mac Studio M3 Ultra**: On 96GB RAM, all 6 local models load simultaneously (~25GB total in 4-bit), enabling parallel inference threads (~25-35 min total). Sequential mode available for 32GB MacBook Pro M4 Pro (~2 hours total).
 
 ## Architecture
 
@@ -24,29 +26,31 @@ The system follows a pipeline architecture with four sequential phases: Dataset 
 
 ```mermaid
 graph TD
-    subgraph "Phase 1: Dataset Generation"
+    subgraph "Phase 1: Dataset Generation (Ollama)"
         CFG[config.yaml] --> DB[Dataset Builder]
         SEEDS[Seed Examples] --> DB
+        OLLAMA1["Ollama<br/>qwen2.5:14b"] --> DB
         DB --> RAW[Raw Variants<br/>per axis]
         DB --> META[Metadata<br/>JSON]
     end
 
-    subgraph "Phase 2: Validation"
+    subgraph "Phase 2: Validation (Ollama)"
         RAW --> VP[Validation Pipeline]
         META --> VP
+        OLLAMA2["Ollama<br/>qwen2.5:14b<br/>LLM Judge"] --> VP
         VP -->|LLM Judge| JUDGED[Judged Items]
         VP -->|Human Review| REVIEWED[Reviewed Items]
         VP --> VALIDATED[Validated Dataset<br/>with split labels]
     end
 
-    subgraph "Phase 3: Experiment Execution"
+    subgraph "Phase 3: Experiment Execution (Local)"
         VALIDATED --> ER[Experiment Runner]
-        ER -->|Sequential Loading| GA1[LlamaGuard 4<br/>4-bit]
-        ER -->|Sequential Loading| GA2[WildGuard-7B<br/>4-bit]
-        ER -->|Sequential Loading| GA3[Granite-Guardian<br/>4-bit]
-        ER -->|Sequential Loading| GA4[Qwen3Guard-8B<br/>4-bit]
-        ER -->|Sequential Loading| GA5[NemoGuard-8B<br/>4-bit]
-        ER -->|API calls| GA6[OpenAI Moderation]
+        ER -->|Parallel or Sequential| GA1[LlamaGuard 4<br/>4-bit]
+        ER -->|Parallel or Sequential| GA2[WildGuard-7B<br/>4-bit]
+        ER -->|Parallel or Sequential| GA3[Granite-Guardian<br/>4-bit]
+        ER -->|Parallel or Sequential| GA4[Qwen3Guard-8B<br/>4-bit]
+        ER -->|Parallel or Sequential| GA5[NemoGuard-8B<br/>4-bit]
+        ER -->|Ollama| GA6[ShieldGemma-9B<br/>Ollama]
         ER --> PREDS[Raw Predictions<br/>CSV/Parquet]
     end
 
@@ -61,9 +65,13 @@ graph TD
     end
 ```
 
-### Sequential Model Loading
+### Parallel and Sequential Model Loading
 
-Only one local model occupies VRAM at a time. The Experiment Runner loads a model, runs all items through it, checkpoints results, unloads the model, verifies VRAM baseline, then loads the next. This enables running all 8B models on a single GPU (e.g., Mac Studio).
+**Parallel Mode (Mac Studio M3 Ultra, 96GB RAM):**
+All 6 local models load simultaneously (~25GB total in 4-bit). Inference runs in parallel threads via ThreadPoolExecutor, with Apple MPS handling concurrent operations on unified memory. Total runtime: ~25-35 minutes.
+
+**Sequential Mode (MacBook Pro M4 Pro, 32GB RAM):**
+One model occupies VRAM at a time. The Experiment Runner loads a model, runs all items through it, checkpoints results, unloads the model, verifies VRAM baseline, then loads the next. This enables running all 8B models on a single GPU. Total runtime: ~2 hours.
 
 ```mermaid
 sequenceDiagram
@@ -71,7 +79,7 @@ sequenceDiagram
     participant VRAM as GPU VRAM
     participant DISK as Checkpoint Store
 
-    loop For each local guardrail
+    loop For each local guardrail (sequential mode)
         ER->>VRAM: Load model (4-bit)
         ER->>ER: Verify VRAM < 5GB
         loop For each item (checkpoint every 500)
@@ -82,7 +90,7 @@ sequenceDiagram
         ER->>VRAM: Unload model + gc
         ER->>VRAM: Verify VRAM at baseline
     end
-    Note over ER: OpenAI API runs separately (no VRAM)
+    Note over ER: Parallel mode: all models loaded, threads run concurrently
 ```
 
 
@@ -229,21 +237,21 @@ Each adapter follows the same pattern:
 | `GraniteGuardianAdapter` | ibm-granite/granite-guardian-3.3-8b | logits_softmax | yes/no token IDs mapped to benign/harmful (case-verified) | Granite chat template |
 | `Qwen3GuardAdapter` | Qwen/Qwen3Guard-8B | logits_softmax | safe/unsafe token IDs from tokenizer | Qwen chat template |
 | `NemoGuardAdapter` | nvidia/Llama-3.1-8B-Instruct-NemoGuard | logits_softmax | safe/unsafe token IDs from tokenizer | Llama-3.1 chat template |
-| `OpenAIModerationAdapter` | OpenAI Moderation API | category_scores | N/A (API returns scores directly) | N/A (API handles formatting) |
+| `ShieldGemmaAdapter` | ShieldGemma-9B (via Ollama) | logits_softmax | safe/unsafe token IDs from tokenizer | ShieldGemma chat template |
 
 **WildGuard native_safety_score caveat**: WildGuard outputs a native safety score that is NOT derived from 2-token logit softmax. The adapter must document what this score represents (per the model card) and whether it has probabilistic semantics. If the score is not a proper probability, this must be noted in the results and WildGuard must be analyzed separately from the logits_softmax models. The three-way `confidence_source_type` stratification ensures WildGuard is never directly compared with logits_softmax models without caveats.
 
 **GraniteGuardian token mapping caveat**: Granite uses "yes"/"no" tokens. The adapter must call `verify_token_mapping()` at initialization to confirm the mapped IDs decode to the expected tokens, catching case-sensitivity issues (e.g., "Yes" vs "yes" in the vocabulary).
 
 All local adapters:
-- Load in 4-bit quantization via `bitsandbytes` (BnB) with `load_in_4bit=True`
+- Load in 4-bit quantization via `bitsandbytes` (BnB) with `load_in_4bit=True` (HuggingFace models) or via Ollama HTTP API (ShieldGemma)
 - Log quantization config and VRAM footprint at initialization
 - Use `temperature=0.0` (greedy decoding) for deterministic inference
 - Apply model-specific chat template via `format_prompt()` before inference
-- Report display name as `"{Model} (4-bit)"`
-- Log hardware/software versions at initialization: torch version, bitsandbytes version, CUDA/MPS backend version
+- Report display name as `"{Model} (4-bit)"` or `"{Model} (Ollama)"`
+- Log hardware/software versions at initialization: torch version, bitsandbytes version, CUDA/MPS backend version, or Ollama version
 
-The `OpenAIModerationAdapter` handles retry logic (3 retries, exponential backoff) and documents that `category_scores` are NOT probabilities.
+The `ShieldGemmaAdapter` handles Ollama HTTP API calls and implements health checks to verify Ollama is running and the model is available.
 
 ### 4. Dataset Builder (`src/datasets/builder.py`)
 

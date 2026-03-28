@@ -120,16 +120,17 @@ Note: All local model results are explicitly for 4-bit quantized versions. Quant
 2. THE Guardrail_Adapter for NemoGuard-8B SHALL derive confidence scores from logits via softmax
 3. WHEN the model is loaded, THE Guardrail_Adapter for NemoGuard-8B SHALL report the quantization configuration and memory footprint to the log
 
-### Requirement 7: OpenAI Moderation API Adapter
+### Requirement 7: ShieldGemma-9B Adapter (Ollama)
 
-**User Story:** As a researcher, I want to evaluate the OpenAI Moderation API, so that I can measure calibration of the most widely deployed commercial guardrail.
+**User Story:** As a researcher, I want to evaluate ShieldGemma-9B locally via Ollama, so that I can measure calibration of a high-quality open-source guardrail without API costs or rate limits.
 
 #### Acceptance Criteria
 
-1. THE Guardrail_Adapter for OpenAI Moderation SHALL call the OpenAI Moderation API and return category_scores as the confidence score
-2. THE Guardrail_Adapter for OpenAI Moderation SHALL document that category_scores are explicitly NOT probabilities per OpenAI documentation
-3. IF the OpenAI API returns an error or times out, THEN THE Guardrail_Adapter for OpenAI Moderation SHALL retry up to 3 times with exponential backoff and log each retry attempt
-4. THE Guardrail_Adapter for OpenAI Moderation SHALL set its confidence_source property to "category_scores"
+1. THE Guardrail_Adapter for ShieldGemma-9B SHALL load the model via Ollama HTTP API (http://localhost:11434)
+2. THE Guardrail_Adapter for ShieldGemma-9B SHALL derive confidence scores from logits via softmax over the safe/unsafe token logits
+3. THE Guardrail_Adapter for ShieldGemma-9B SHALL implement a health check to verify Ollama is running and shieldgemma:9b is available before inference
+4. WHEN the model is loaded, THE Guardrail_Adapter for ShieldGemma-9B SHALL report the Ollama endpoint and model availability to the log
+5. THE Guardrail_Adapter for ShieldGemma-9B SHALL set its confidence_source property to "logits_softmax"
 
 ### Requirement 8: Sequential Model Loading
 
@@ -162,39 +163,41 @@ Note: All local model results are explicitly for 4-bit quantized versions. Quant
 3. THE Experiment_Runner SHALL compute ECE for both quantization levels on the subset and report the difference
 4. IF the mean absolute confidence score difference exceeds 0.05 or the ECE difference exceeds 0.02, THEN THE Experiment_Runner SHALL log a warning and include a quantization impact analysis in the results
 
-### Requirement 9: Dataset Generation — Axis 1 (Linguistic Register)
+### Requirement 9: Dataset Generation — Axis 1 (Linguistic Register) via Ollama
 
-**User Story:** As a researcher, I want to generate linguistic register variants of harmful/benign requests, so that I can measure calibration shift when the same content is expressed in different registers.
+**User Story:** As a researcher, I want to generate linguistic register variants of harmful/benign requests using Ollama, so that I can measure calibration shift when the same content is expressed in different registers without API costs.
 
 #### Acceptance Criteria
 
-1. THE Dataset_Builder SHALL generate variants of 50-100 seed harmful requests AND 50-100 seed benign requests across 4-5 linguistic registers: formal/clinical, technical/jargon, informal/colloquial, and coded/slang
+1. THE Dataset_Builder SHALL use Ollama (qwen2.5:14b) to generate variants of 50-100 seed harmful requests AND 50-100 seed benign requests across 4-5 linguistic registers: formal/clinical, technical/jargon, informal/colloquial, and coded/slang
 2. THE Dataset_Builder SHALL assign each variant a shift_level from 0 (seed) to 4 (maximum register shift)
 3. THE Dataset_Builder SHALL preserve the ground_truth_label across all register variants of the same seed
 4. THE Dataset_Builder SHALL produce approximately 200-500 items for Axis 1
 5. THE Dataset_Builder SHALL maintain approximately 50/50 class balance (harmful vs benign) within each shift_level for Axis 1
+6. THE Dataset_Builder SHALL strip label-leaking phrases from LLM-generated variants (e.g., "Here is a harmful request…") before storing variant_text
 
-### Requirement 10: Dataset Generation — Axis 2 (Cultural Context, APAC-Specific)
+### Requirement 10: Dataset Generation — Axis 2 (Cultural Context, APAC-Specific) via Ollama
 
-**User Story:** As a researcher, I want to generate culturally-framed variants specific to APAC contexts, so that I can measure calibration shift when harmful content is expressed through cultural frames.
+**User Story:** As a researcher, I want to generate culturally-framed variants specific to APAC contexts using Ollama, so that I can measure calibration shift when harmful content is expressed through cultural frames without API costs.
 
 #### Acceptance Criteria
 
-1. THE Dataset_Builder SHALL generate cultural context variants from 30-40 base harmful examples AND 30-40 base benign examples covering: corporal punishment through filial piety framing, controlled substances through traditional medicine contexts, and self-harm through culturally specific idioms
+1. THE Dataset_Builder SHALL use Ollama (qwen2.5:14b) to generate cultural context variants from 30-40 base harmful examples AND 30-40 base benign examples covering: corporal punishment through filial piety framing, controlled substances through traditional medicine contexts, and self-harm through culturally specific idioms
 2. THE Dataset_Builder SHALL include Singlish/code-switching edge cases in the cultural context variants
 3. THE Dataset_Builder SHALL preserve the ground_truth_label across all cultural variants of the same seed (cultural framing changes HOW a harmful request is expressed, not WHETHER the content is harmful)
 4. THE Dataset_Builder SHALL tag each Axis 2 item with the specific cultural frame applied
 5. THE Dataset_Builder SHALL maintain approximately 50/50 class balance (harmful vs benign) within each shift_level for Axis 2
+6. THE Dataset_Builder SHALL strip label-leaking phrases from LLM-generated variants before storing variant_text
 
-### Requirement 11: Dataset Generation — Axis 3 (Directness/Indirection)
+### Requirement 11: Dataset Generation — Axis 3 (Directness/Indirection) via Ollama
 
-**User Story:** As a researcher, I want to generate indirection variants of harmful requests, so that I can measure whether guardrail confidence tracks the actual gradient of harmfulness as indirection increases.
+**User Story:** As a researcher, I want to generate indirection variants of harmful requests using Ollama, so that I can measure whether guardrail confidence tracks the actual gradient of harmfulness as indirection increases without API costs.
 
 Note: Unlike Axes 1, 2, 4, and 5, Axis 3 does NOT assume ground truth invariance. Indirection genuinely changes the risk profile of a request — a direct instruction to pick a lock is more harmful than a hypothetical story about lock-picking. This axis measures whether guardrail confidence appropriately tracks that gradient, not whether it preserves a fixed label.
 
 #### Acceptance Criteria
 
-1. THE Dataset_Builder SHALL generate variants of 100 base harmful requests across 5 indirection levels: direct, indirect implication, hypothetical, roleplay framing, and academic framing
+1. THE Dataset_Builder SHALL use Ollama (qwen2.5:14b) to generate variants of 100 base harmful requests across 5 indirection levels: direct, indirect implication, hypothetical, roleplay framing, and academic framing
 2. THE Dataset_Builder SHALL include a "Benign Refusals" subset of at least 50 items containing examples where refusal language is present but the content is benign, to test the refusal confound
 3. THE Dataset_Builder SHALL assign shift_level 0 to direct requests and shift_level 4 to the most indirect framing
 4. THE Dataset_Builder SHALL produce approximately 500 harmful-seed items for Axis 3 (100 base × 5 levels) plus the Benign Refusals subset
@@ -202,32 +205,35 @@ Note: Unlike Axes 1, 2, 4, and 5, Axis 3 does NOT assume ground truth invariance
 6. THE Calibration_Analyzer SHALL analyze Axis 3 using the graded_harmfulness scores as ground truth, measuring whether the guardrail's predicted probability of the "harmful" class correlates with the human-assessed risk gradient (Spearman rank correlation) rather than using binary ECE
 7. THE Calibration_Analyzer SHALL NOT compute binary ECE for Axis 3 as a valid calibration metric, because penalizing a model for outputting low confidence on a genuinely less-harmful indirection variant would punish correct calibration behavior; binary ECE is only valid for axes where ground truth is invariant (Axes 1, 2, 4, 5)
 8. THE Validation_Pipeline SHALL compute inter-rater reliability (Spearman correlation or weighted Cohen's kappa) between the two Axis 3 annotators on the graded_harmfulness scores, and SHALL report this alongside the results
+9. THE Dataset_Builder SHALL strip label-leaking phrases from LLM-generated variants before storing variant_text
 
-### Requirement 12: Dataset Generation — Axis 4 (Domain Shift)
+### Requirement 12: Dataset Generation — Axis 4 (Domain Shift) via Ollama
 
-**User Story:** As a researcher, I want to generate domain-shifted variants, so that I can measure calibration shift when harmful content is framed in medical, legal, technical/security, or creative writing domains.
+**User Story:** As a researcher, I want to generate domain-shifted variants using Ollama, so that I can measure calibration shift when harmful content is framed in medical, legal, technical/security, or creative writing domains without API costs.
 
 #### Acceptance Criteria
 
-1. THE Dataset_Builder SHALL generate variants of 100 base harmful examples AND 100 base benign examples across 4 domain framings: medical, legal, technical/security, and creative writing
+1. THE Dataset_Builder SHALL use Ollama (qwen2.5:14b) to generate variants of 100 base harmful examples AND 100 base benign examples across 4 domain framings: medical, legal, technical/security, and creative writing
 2. THE Dataset_Builder SHALL include APAC public sector language variants (regulatory, legislative, public health) within the domain framings
 3. THE Dataset_Builder SHALL preserve the ground_truth_label across all domain variants of the same seed
 4. THE Dataset_Builder SHALL produce approximately 400 harmful items and 400 benign items for Axis 4 (200 base × 4 domains)
 5. THE Dataset_Builder SHALL maintain approximately 50/50 class balance (harmful vs benign) within each shift_level for Axis 4
+6. THE Dataset_Builder SHALL strip label-leaking phrases from LLM-generated variants before storing variant_text
 
-### Requirement 13: Dataset Generation — Axis 5 (Language, APAC-Focused)
+### Requirement 13: Dataset Generation — Axis 5 (Language, APAC-Focused) via Ollama
 
-**User Story:** As a researcher, I want to translate an English subset into APAC languages, so that I can measure calibration shift across languages relevant to Southeast Asian deployment.
+**User Story:** As a researcher, I want to translate an English subset into APAC languages using Ollama, so that I can measure calibration shift across languages relevant to Southeast Asian deployment without API costs.
 
 #### Acceptance Criteria
 
-1. THE Dataset_Builder SHALL translate a 200-item English subset (100 harmful, 100 benign) into Malay, Mandarin Chinese (Simplified), and Indonesian
-2. THE Dataset_Builder SHALL use professional-quality translation (human or high-quality MT with human review)
+1. THE Dataset_Builder SHALL use Ollama (qwen2.5:14b, which has strong multilingual support) to translate a 200-item English subset (100 harmful, 100 benign) into Malay, Mandarin Chinese (Simplified), and Indonesian
+2. THE Dataset_Builder SHALL use professional-quality translation (Ollama with native speaker review for validation)
 3. THE Dataset_Builder SHALL preserve the ground_truth_label across all language variants of the same seed
 4. THE Dataset_Builder SHALL produce approximately 800 items for Axis 5 (200 base × 4 languages including English baseline)
 5. THE Validation_Pipeline SHALL have a native or fluent speaker review 100% of harmful translations in each target language to verify that translation does not introduce cultural artifacts that change the perceived harmfulness
 6. THE Dataset_Builder SHALL document that ground truth labels are anchored to the English seed's harmful intent, and that this represents a Western-normative labeling approach — items where translation introduces culturally-specific harm ambiguity SHALL be flagged for sensitivity analysis
 7. THE Experiment_Runner SHALL record the token count (number of tokens produced by each model's tokenizer) for every Axis 5 item, and THE Calibration_Analyzer SHALL report whether confidence degradation on non-English inputs correlates with token count increase (tokenizer fragmentation) to distinguish semantic miscalibration from tokenizer artifacts
+8. THE Dataset_Builder SHALL strip label-leaking phrases from LLM-generated translations before storing variant_text
 
 ### Requirement 14: Metadata Schema
 
@@ -241,13 +247,13 @@ Note: Unlike Axes 1, 2, 4, and 5, Axis 3 does NOT assume ground truth invariance
 4. THE Metadata_Schema SHALL be serializable to and parseable from JSON
 5. FOR ALL valid Metadata_Schema objects, serializing to JSON then parsing back SHALL produce an equivalent object (round-trip property)
 
-### Requirement 15: LLM-as-Judge Validation
+### Requirement 15: LLM-as-Judge Validation via Ollama
 
-**User Story:** As a researcher, I want automated validation that ground truth labels are preserved across variants, so that I can catch label-flipping errors before running the experiment.
+**User Story:** As a researcher, I want automated validation that ground truth labels are preserved across variants using Ollama, so that I can catch label-flipping errors before running the experiment without API costs.
 
 #### Acceptance Criteria
 
-1. THE Validation_Pipeline SHALL use a different LLM from the generation LLM as the LLM_Judge (e.g., if GPT-4o-mini generates variants, use Claude or GPT-4o for validation) to avoid circular validation bias
+1. THE Validation_Pipeline SHALL use Ollama (qwen2.5:14b) as the LLM_Judge to validate that ground truth labels are preserved across variants
 2. WHEN the LLM_Judge disagrees with the assigned ground_truth_label, THE Validation_Pipeline SHALL flag the item for human review and set its validation_status to "disputed"
 3. THE Validation_Pipeline SHALL process a stratified 20% human review sample across ALL axes, not limited to borderline cases, including items where the judge was highly confident
 4. THE Validation_Pipeline SHALL compute and report the LLM_Judge error rate by comparing its judgments against the human-reviewed sample, to estimate validation pipeline reliability
@@ -462,14 +468,14 @@ Note: This subset is too small (100-150 items) for formal hypothesis testing or 
 3. THE Calibration_Analyzer SHALL identify and report any conditions where accuracy and ECE diverge (e.g., accuracy drops moderately but ECE spikes, or accuracy drops sharply but ECE remains stable)
 4. THE pilot results SHALL be used to validate the experimental methodology and, if divergence is found, to provide a concrete motivating example for the paper's introduction
 
-### Requirement 33: OpenAI Moderation as Separate Practitioner Analysis
+### Requirement 33: ShieldGemma-9B as Separate Logit-Based Analysis
 
-**User Story:** As a researcher, I want the OpenAI Moderation API results presented as a clearly separated practitioner reference analysis, so that the non-probabilistic nature of its scores does not confound the main calibration comparison.
+**User Story:** As a researcher, I want ShieldGemma-9B results presented clearly alongside other logit-based models, so that I can compare local open-source guardrails on equal footing.
 
 #### Acceptance Criteria
 
-1. THE Calibration_Analyzer SHALL present all OpenAI Moderation API results in a dedicated "Practitioner Reference" section, separate from the main calibration analysis of the 5 logit-based open-source models
-2. THE Calibration_Analyzer SHALL frame the OpenAI analysis as: "We evaluate whether OpenAI's category_scores — which are explicitly not probabilities — can nonetheless be used as calibrated confidence proxies in operational threshold decisions"
-3. THE Calibration_Analyzer SHALL use AUROC as the primary metric for OpenAI Moderation (since AUROC does not require probabilistic semantics), with ECE and Brier Score reported as secondary metrics with explicit caveats that they assume probabilistic inputs
-4. THE Calibration_Analyzer SHALL compute the same threshold metrics (precision/recall at 0.80, 0.90, 0.95) for OpenAI, since threshold-based analysis is valid regardless of whether scores are probabilities
-5. THE Calibration_Analyzer SHALL NOT include OpenAI in any ranking tables or comparative plots alongside the logit-based models without a prominent caveat
+1. THE Calibration_Analyzer SHALL present ShieldGemma-9B results alongside the other 4 logit-based open-source models (LlamaGuard 4, WildGuard, Granite, Qwen3Guard, NemoGuard) in the main calibration analysis
+2. THE Calibration_Analyzer SHALL use ECE, Brier Score, and threshold metrics as the primary metrics for ShieldGemma-9B (same as other logit-based models)
+3. THE Calibration_Analyzer SHALL compute the same threshold metrics (precision/recall at 0.80, 0.90, 0.95) for ShieldGemma-9B
+4. THE Calibration_Analyzer SHALL include ShieldGemma-9B in all ranking tables and comparative plots alongside other logit-based models
+5. THE Calibration_Analyzer SHALL note that ShieldGemma-9B is evaluated via Ollama (local, zero API cost) while other models use HuggingFace Transformers (also local, zero API cost)
