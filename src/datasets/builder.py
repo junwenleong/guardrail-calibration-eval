@@ -2,6 +2,10 @@
 
 Seed sources: HarmBench, AdvBench, ToxiGen, or similar public benchmarks.
 Seeds are loaded from JSONL files in data/seeds/{axis_name}.jsonl.
+
+LLM generation uses Ollama (qwen2.5:14b) running locally — no API keys required.
+Start Ollama before running: ollama serve
+Pull the model: ollama pull qwen2.5:14b
 """
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.models import DatasetItem, SeedExample
+from src.utils.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +47,30 @@ class DatasetBuilder:
 
     Seed sources must be standardized benchmarks (HarmBench, AdvBench, ToxiGen).
     Document seed sources in config.yaml under 'seed_sources'.
+
+    LLM generation uses Ollama (qwen2.5:14b) locally — no API keys required.
+    Pass ollama_client=None to use placeholder variants (for testing).
     """
 
-    def __init__(self, seed_dir: str | Path = "data/seeds"):
+    def __init__(
+        self,
+        seed_dir: str | Path = "data/seeds",
+        ollama_client: OllamaClient | None = None,
+    ):
         self._seed_dir = Path(seed_dir)
         self._used_ids: set[str] = set()
+        self._ollama = ollama_client
+
+    def _make_llm_fn(self):
+        """Return an llm_fn callable backed by Ollama, or None for placeholder mode."""
+        if self._ollama is None:
+            return None
+
+        def llm_fn(prompt: str) -> str:
+            return self._ollama.generate(prompt)
+
+        llm_fn.__name__ = "ollama_qwen2.5:14b"
+        return llm_fn
 
     # ------------------------------------------------------------------
     # Seed ingestion
@@ -83,11 +107,13 @@ class DatasetBuilder:
 
         Args:
             seeds: 50-100 harmful + 50-100 benign SeedExamples.
-            llm_fn: callable(prompt: str) -> str for LLM-based generation.
-                    If None, uses placeholder variants for testing.
+            llm_fn: callable(prompt: str) -> str. If None, uses the Ollama
+                    client configured at init, or placeholder if no client.
 
         Returns ~200-500 items with 50/50 class balance per shift_level.
         """
+        if llm_fn is None:
+            llm_fn = self._make_llm_fn()
         registers = [
             (0, "seed"),
             (1, "formal_clinical"),
@@ -137,6 +163,8 @@ class DatasetBuilder:
         Cultural frames: filial_piety, traditional_medicine, cultural_idioms, singlish.
         All items tagged with cultural_frame. Dual human review required.
         """
+        if llm_fn is None:
+            llm_fn = self._make_llm_fn()
         frames = [
             (0, None, "seed"),
             (1, "filial_piety", "Reframe through filial piety / family obligation"),
@@ -183,6 +211,8 @@ class DatasetBuilder:
 
         Includes APAC public sector language variants within domain framings.
         """
+        if llm_fn is None:
+            llm_fn = self._make_llm_fn()
         domains = [
             (0, "seed"),
             (1, "medical"),
@@ -317,6 +347,8 @@ class DatasetBuilder:
         - "soft_indirection": roleplay, hypothetical, academic framing
         - "hard_adversarial": Base64, leetspeak, character substitution
         """
+        if llm_fn is None:
+            llm_fn = self._make_llm_fn()
         indirection_levels = [
             (0, "direct", None),
             (1, "indirect_implication", "soft_indirection"),
@@ -396,13 +428,24 @@ class DatasetBuilder:
 
         Args:
             seeds: 200-item English subset (100 harmful, 100 benign).
-            translate_fn: callable(text, target_lang) -> str.
-                          If None, uses placeholder translations for testing.
+            translate_fn: callable(text, target_lang) -> str. If None, uses
+                          Ollama (qwen2.5:14b) which has strong multilingual support.
             tokenizer_fns: dict mapping guardrail_name -> tokenizer for token counting.
 
         Flags western_norm_flag=True where translation introduces cultural ambiguity.
         Records token_counts per model for tokenizer fragmentation analysis.
         """
+        if translate_fn is None and self._ollama is not None:
+            def translate_fn(text: str, lang: str) -> str:
+                lang_names = {"ms": "Malay", "zh": "Simplified Chinese", "id": "Indonesian"}
+                lang_name = lang_names.get(lang, lang)
+                prompt = (
+                    f"Translate the following text to {lang_name}. "
+                    "Preserve the original meaning exactly. "
+                    "Output only the translation, nothing else.\n\n"
+                    f"{text}"
+                )
+                return self._ollama.generate(prompt, temperature=0.1)
         languages = [
             (0, "en"),
             (1, "ms"),   # Malay

@@ -1,9 +1,15 @@
-"""ExperimentRunner: orchestrates the factorial experiment with sequential model loading.
+"""ExperimentRunner: orchestrates the factorial experiment.
+
+Mac Studio M3 Ultra (96GB RAM) mode: parallel model loading via ThreadPoolExecutor.
+All 5 local models (~25GB total in 4-bit) fit simultaneously, enabling parallel
+inference instead of sequential load/unload cycles.
+
+MacBook Pro M4 Pro (32GB RAM) mode: sequential loading (one model at a time).
+Controlled by the parallel_loading flag in ExperimentRunner.__init__().
 
 Key design decisions:
-- Only one local model occupies VRAM at a time
 - Atomic checkpointing via write-then-rename prevents Parquet corruption
-- VRAM leak detection after every unload_model() call
+- VRAM leak detection after every unload_model() call (sequential mode only)
 - Per-prediction timestamp_utc for API drift detection
 - temperature=0.0 for all local model inference (deterministic)
 """
@@ -13,6 +19,7 @@ import gc
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,7 +61,13 @@ class QuantBaselineReport:
 
 
 class ExperimentRunner:
-    """Orchestrates the full factorial experiment across all guardrails and axes."""
+    """Orchestrates the full factorial experiment across all guardrails and axes.
+
+    Set parallel_loading=True on Mac Studio M3 Ultra (96GB RAM) to load all
+    local models simultaneously and run inference in parallel threads.
+    Set parallel_loading=False on MacBook Pro M4 Pro (32GB RAM) for sequential
+    load/unload to stay within memory constraints.
+    """
 
     def __init__(
         self,
@@ -62,16 +75,26 @@ class ExperimentRunner:
         checkpoint_frequency: int = 500,
         temperature: float = 0.0,
         random_seed: int = 42,
+        parallel_loading: bool = True,
+        max_parallel_workers: int = 5,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_frequency = checkpoint_frequency
         self.temperature = temperature
         self.random_seed = random_seed
+        self.parallel_loading = parallel_loading
+        self.max_parallel_workers = max_parallel_workers
 
         # Initialize reproducibility
         set_global_seeds(random_seed)
         log_environment()
+
+        mode = "parallel" if parallel_loading else "sequential"
+        logger.info(
+            "ExperimentRunner initialized: mode=%s, workers=%d",
+            mode, max_parallel_workers if parallel_loading else 1,
+        )
 
     # ------------------------------------------------------------------
     # Sanity check
@@ -92,7 +115,10 @@ class ExperimentRunner:
 
         reports = []
         for adapter in adapters:
-            logger.info("Sanity check: %s on %d items", adapter.get_model_name(), len(subset))
+            logger.info(
+                "Sanity check: %s on %d items",
+                adapter.get_model_name(), len(subset),
+            )
             adapter.load_model()
             scores = []
             labels = []
@@ -190,7 +216,10 @@ class ExperimentRunner:
             "Running %s on %d items (temperature=%.1f)",
             adapter.get_model_name(), len(items) - start_idx, self.temperature,
         )
-        logger.info("Temperature: %.1f for %s", self.temperature, adapter.get_model_name())
+        logger.info(
+            "Temperature: %.1f for %s",
+            self.temperature, adapter.get_model_name(),
+        )
 
         buffer: list[Prediction] = []
         try:
@@ -250,7 +279,6 @@ class ExperimentRunner:
         gc.collect()
         after_mb = self._get_vram_mb()
         if before_mb is not None and after_mb is not None:
-            leaked_mb = after_mb - (before_mb - self._get_model_size_estimate_mb())
             if after_mb > _VRAM_LEAK_THRESHOLD_MB:
                 logger.warning(
                     "Possible VRAM leak after unloading %s: %.1f MB remaining",
@@ -268,7 +296,10 @@ class ExperimentRunner:
                 try:
                     return torch.mps.current_allocated_memory() / 1024 ** 2
                 except AttributeError:
-                    logger.warning("torch.mps.current_allocated_memory() unavailable — VRAM leak detection disabled on MPS")
+                    logger.warning(
+                        "torch.mps.current_allocated_memory() unavailable"
+                        " — VRAM leak detection disabled on MPS"
+                    )
                     return None
         except ImportError:
             pass
@@ -306,7 +337,9 @@ class ExperimentRunner:
             import numpy as np
             skipped_analysis = {
                 "mean_length_all": float(np.mean(all_lengths)),
-                "mean_length_missing": float(np.mean(missing_lengths)) if missing_lengths else 0.0,
+                "mean_length_missing": (
+                    float(np.mean(missing_lengths)) if missing_lengths else 0.0
+                ),
                 "length_bias_detected": (
                     float(np.mean(missing_lengths)) > float(np.mean(all_lengths)) * 1.5
                     if missing_lengths else False
@@ -424,7 +457,10 @@ class ExperimentRunner:
 
         all_predictions: dict[str, list[Prediction]] = {}
         for adapter in adapters:
-            checkpoint_path = self.checkpoint_dir / f"pilot_{adapter.get_model_name().replace(' ', '_')}.parquet"
+            checkpoint_path = (
+                self.checkpoint_dir
+                / f"pilot_{adapter.get_model_name().replace(' ', '_')}.parquet"
+            )
             preds = self._load_and_run(adapter, pilot_items, checkpoint_path)
             all_predictions[adapter.get_model_name()] = preds
 
@@ -468,25 +504,167 @@ class ExperimentRunner:
     ) -> dict[str, list[Prediction]]:
         """Run the full factorial experiment: 6 guardrails × ~10k items.
 
-        Sequential model loading — only one model in VRAM at a time.
-        Checkpoints every 500 items per guardrail.
-        Runs API canary check at start, middle, and end for OpenAI adapter.
+        On Mac Studio M3 Ultra (parallel_loading=True):
+          - Loads all local models simultaneously (~25GB total in 4-bit)
+          - Runs inference in parallel threads (~25-35 min total)
 
+        On MacBook Pro M4 Pro (parallel_loading=False):
+          - Sequential load/unload, one model at a time (~2 hours total)
+
+        Checkpoints every 500 items per guardrail regardless of mode.
         Returns dict mapping guardrail_name -> list[Prediction].
         """
-        log_environment()  # Log environment at start of full run
-        all_predictions: dict[str, list[Prediction]] = {}
+        log_environment()
+        if self.parallel_loading:
+            results = self._run_parallel(adapters, dataset)
+        else:
+            results = self._run_sequential(adapters, dataset)
+        log_environment()
+        return results
 
+    def _run_sequential(
+        self,
+        adapters: list[GuardrailAdapter],
+        dataset: list[DatasetItem],
+    ) -> dict[str, list[Prediction]]:
+        """Sequential mode: load → run → unload one model at a time."""
+        all_predictions: dict[str, list[Prediction]] = {}
         for adapter in adapters:
             name = adapter.get_model_name()
             checkpoint_path = self.checkpoint_dir / f"{name.replace(' ', '_')}.parquet"
-            logger.info("Starting full experiment for %s", name)
+            logger.info("Sequential: starting %s", name)
             preds = self._load_and_run(adapter, dataset, checkpoint_path)
             all_predictions[name] = preds
-            logger.info("Completed %s: %d predictions", name, len(preds))
-
-        log_environment()  # Log environment at end to detect mid-run changes
+            logger.info("Sequential: completed %s — %d predictions", name, len(preds))
         return all_predictions
+
+    def _run_parallel(
+        self,
+        adapters: list[GuardrailAdapter],
+        dataset: list[DatasetItem],
+    ) -> dict[str, list[Prediction]]:
+        """Parallel mode: load all models, run inference concurrently.
+
+        Each adapter runs in its own thread. Apple MPS handles concurrent
+        inference across models sharing the unified memory pool.
+        """
+        logger.info(
+            "Parallel mode: loading %d models simultaneously (max_workers=%d)",
+            len(adapters), self.max_parallel_workers,
+        )
+
+        # Load all models first
+        for adapter in adapters:
+            logger.info("Loading %s…", adapter.get_model_name())
+            adapter.load_model()
+        logger.info("All %d models loaded — starting parallel inference", len(adapters))
+
+        all_predictions: dict[str, list[Prediction]] = {}
+
+        def run_adapter(adapter: GuardrailAdapter) -> tuple[str, list[Prediction]]:
+            name = adapter.get_model_name()
+            checkpoint_path = (
+                self.checkpoint_dir / f"{name.replace(' ', '_')}.parquet"
+            )
+            # Run inference without load/unload (already loaded)
+            preds = self._run_items(adapter, dataset, checkpoint_path)
+            return name, preds
+
+        with ThreadPoolExecutor(max_workers=self.max_parallel_workers) as pool:
+            futures = {
+                pool.submit(run_adapter, a): a.get_model_name()
+                for a in adapters
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    guardrail_name, preds = future.result()
+                    all_predictions[guardrail_name] = preds
+                    logger.info(
+                        "Parallel: completed %s — %d predictions",
+                        guardrail_name, len(preds),
+                    )
+                except Exception as e:
+                    logger.error("Parallel inference failed for %s: %s", name, e)
+                    raise
+
+        # Unload all models after parallel run
+        for adapter in adapters:
+            self._unload_with_vram_check(adapter)
+
+        return all_predictions
+
+    def _run_items(
+        self,
+        adapter: GuardrailAdapter,
+        items: list[DatasetItem],
+        checkpoint_path: Path,
+    ) -> list[Prediction]:
+        """Run inference on items without load/unload (for parallel mode).
+
+        Resumes from checkpoint if available.
+        """
+        predictions: list[Prediction] = []
+        start_idx = 0
+
+        if checkpoint_path.exists():
+            df = pd.read_parquet(checkpoint_path)
+            predictions = [Prediction(**row) for row in df.to_dict("records")]
+            start_idx = len(predictions)
+            logger.info(
+                "Resuming %s from checkpoint: %d/%d items done",
+                adapter.get_model_name(), start_idx, len(items),
+            )
+
+        if start_idx >= len(items):
+            return predictions
+
+        logger.info(
+            "Running %s on %d items (temperature=%.1f)",
+            adapter.get_model_name(), len(items) - start_idx, self.temperature,
+        )
+
+        buffer: list[Prediction] = []
+        i = start_idx
+        try:
+            for i, item in enumerate(items[start_idx:], start=start_idx):
+                t0 = time.perf_counter()
+                result = adapter.predict(item.variant_text)
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+
+                pred = Prediction(
+                    guardrail_name=adapter.get_model_name(),
+                    item_id=item.item_id,
+                    predicted_label=result.label,
+                    confidence_score=result.confidence_score,
+                    inference_time_ms=elapsed_ms,
+                    two_token_mass=result.two_token_mass,
+                    confidence_source_type=adapter.confidence_source_type,
+                    split=item.split,
+                    timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                )
+                buffer.append(pred)
+
+                if len(buffer) >= self.checkpoint_frequency:
+                    predictions.extend(buffer)
+                    self._atomic_checkpoint(predictions, checkpoint_path)
+                    buffer = []
+                    logger.info(
+                        "%s: %d/%d items processed",
+                        adapter.get_model_name(), i + 1, len(items),
+                    )
+        except Exception as e:
+            logger.error(
+                "Inference failed at item %d for %s: %s",
+                i, adapter.get_model_name(), e,
+            )
+            raise
+        finally:
+            if buffer:
+                predictions.extend(buffer)
+                self._atomic_checkpoint(predictions, checkpoint_path)
+
+        return predictions
 
     # ------------------------------------------------------------------
     # Quantization baseline

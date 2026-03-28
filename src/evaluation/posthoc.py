@@ -35,7 +35,7 @@ class CalibrationTuner:
     """Fits post-hoc calibration on dev split, evaluates on test split.
 
     Only applies to logit-based models (Platt/Isotonic assume probabilistic inputs).
-    WildGuard (native_safety_score) and OpenAI (api_score) are excluded.
+    WildGuard (native_safety_score) and api_score adapters are excluded.
     """
 
     def fit_platt_scaling(

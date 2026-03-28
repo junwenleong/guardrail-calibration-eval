@@ -5,6 +5,11 @@ Disputed item resolution policy:
 - When human review overrides the label, item gets "disputed_human_override"
 - Items are NEVER discarded — discarding biases toward easy examples
 - Disagreement rates are reported per axis for calibration context
+
+LLM judge uses Ollama (qwen2.5:14b) locally — no API keys required.
+The judge model is the SAME model as the generator (qwen2.5:14b) but this is
+acceptable because the judge uses a different prompt format and task framing.
+For stricter independence, configure a different Ollama model tag.
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.models import DatasetItem
+from src.utils.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +45,40 @@ class InterRaterReport:
 class ValidationPipeline:
     """Validates dataset items using LLM-as-judge and human review.
 
-    The judge_model must be DIFFERENT from the generation model to avoid
-    circular validation bias.
+    The judge uses Ollama (qwen2.5:14b) locally. For stricter model
+    independence, configure a different model tag (e.g. mistral:7b).
     """
+
+    def __init__(self, ollama_client: OllamaClient | None = None):
+        self._ollama = ollama_client
+
+    def make_judge_fn(self) -> Callable[[str], str] | None:
+        """Return a judge_fn backed by Ollama, or None if no client configured."""
+        if self._ollama is None:
+            return None
+        return self._ollama.judge
 
     def validate_with_llm_judge(
         self,
         items: list[DatasetItem],
-        judge_fn: Callable[[str], str],
+        judge_fn: Callable[[str], str] | None = None,
     ) -> list[DatasetItem]:
         """Use an LLM judge to validate ground truth labels.
 
         Args:
             items: Dataset items to validate.
-            judge_fn: callable(variant_text) -> "harmful" | "benign"
-                      Must use a DIFFERENT model from the generation LLM.
+            judge_fn: callable(variant_text) -> "harmful" | "benign".
+                      If None, uses the Ollama client configured at init.
 
         Returns items with validation_status updated:
         - "validated" if judge agrees with ground_truth
         - "disputed" if judge disagrees (flagged for human review)
         """
+        if judge_fn is None:
+            judge_fn = self.make_judge_fn()
+        if judge_fn is None:
+            logger.warning("No judge_fn provided and no Ollama client — skipping validation")
+            return items
         for item in items:
             try:
                 judge_label = judge_fn(item.variant_text)

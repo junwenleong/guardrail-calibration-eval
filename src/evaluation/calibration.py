@@ -689,7 +689,7 @@ class CalibrationAnalyzer:
         )
 
     # ------------------------------------------------------------------
-    # AUROC (for OpenAI Moderation)
+    # AUROC (for api_score adapters)
     # ------------------------------------------------------------------
 
     def compute_auroc(
@@ -697,10 +697,10 @@ class CalibrationAnalyzer:
         predictions: list[Prediction],
         items: list[DatasetItem] | None = None,
     ) -> float:
-        """Compute AUROC — primary metric for OpenAI Moderation API.
+        """Compute AUROC — primary metric for api_score confidence sources.
 
-        category_scores are not probabilities, so AUROC is more appropriate
-        than ECE for ranking-based evaluation.
+        Non-probabilistic scores (e.g. category_scores) are better evaluated
+        with AUROC (ranking-based) than ECE (calibration-based).
         """
         from sklearn.metrics import roc_auc_score
 
@@ -739,7 +739,7 @@ class CalibrationAnalyzer:
 
 
     # ------------------------------------------------------------------
-    # OpenAI Moderation — separate practitioner analysis
+    # api_score adapter — separate practitioner analysis
     # ------------------------------------------------------------------
 
     def compute_openai_analysis(
@@ -748,13 +748,12 @@ class CalibrationAnalyzer:
         items: list[DatasetItem] | None = None,
         thresholds: list[float] | None = None,
     ) -> dict:
-        """Compute OpenAI Moderation API analysis as a separate practitioner section.
+        """Compute analysis for api_score adapters as a separate practitioner section.
 
-        IMPORTANT: category_scores are NOT probabilities. ECE and Brier Score
-        are computed with explicit caveats. AUROC is the primary metric.
-
-        Do NOT include OpenAI in ranking tables alongside logit-based models
-        without a prominent disclaimer.
+        api_score confidence sources (e.g. category_scores) are NOT probabilities.
+        ECE and Brier Score are computed with explicit caveats. AUROC is the
+        primary metric. Do NOT include api_score models in ranking tables
+        alongside logit-based models without a prominent disclaimer.
 
         Returns a dict with:
         - auroc: float (primary metric)
@@ -767,13 +766,13 @@ class CalibrationAnalyzer:
 
         openai_preds = [p for p in predictions if p.confidence_source_type == "api_score"]
         if not openai_preds:
-            logger.warning("No api_score predictions found for OpenAI analysis")
+            logger.warning("No api_score predictions found for api_score analysis")
             return {}
 
         caveat = (
-            "IMPORTANT: OpenAI category_scores are explicitly NOT probabilities "
-            "per OpenAI documentation. ECE and Brier Score assume probabilistic "
-            "inputs and are included for reference only. AUROC is the primary metric."
+            "IMPORTANT: api_score confidence sources are NOT calibrated probabilities. "
+            "ECE and Brier Score assume probabilistic inputs and are included for "
+            "reference only. AUROC is the primary metric."
         )
         logger.warning(caveat)
 

@@ -1,121 +1,109 @@
-"""Unit tests for OpenAI Moderation adapter retry logic."""
+"""Unit tests for ShieldGemma adapter (replaces OpenAI Moderation adapter).
+
+ShieldGemma 9B runs locally via Ollama — no API keys required.
+"""
 from __future__ import annotations
 
+import math
 from unittest.mock import MagicMock, patch
+
 import pytest
 
-from src.guardrails.openai_moderation import OpenAIModerationAdapter
+from src.guardrails.shieldgemma import ShieldGemmaAdapter
 
 
-def _make_moderation_response(flagged: bool, max_score: float = 0.9):
-    """Build a mock OpenAI moderation response."""
-    result = MagicMock()
-    result.flagged = flagged
-    scores = MagicMock()
-    scores.model_dump.return_value = {"hate": max_score, "violence": 0.1}
-    result.category_scores = scores
-    response = MagicMock()
-    response.results = [result]
-    return response
+def _make_ollama_response(yes_logprob: float, no_logprob: float) -> dict:
+    """Build a mock Ollama /api/generate response with logprobs."""
+    return {
+        "response": "Yes" if yes_logprob > no_logprob else "No",
+        "logprobs": {
+            "token_logprobs": [
+                {"Yes": yes_logprob, "No": no_logprob}
+            ]
+        },
+    }
+
+
+def _make_text_only_response(text: str) -> dict:
+    """Build a mock Ollama response without logprobs (fallback path)."""
+    return {"response": text, "logprobs": None}
 
 
 # ---------------------------------------------------------------------------
-# Test: successful prediction
+# Test: successful prediction via logprobs
 # ---------------------------------------------------------------------------
 
-def test_predict_harmful():
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
-    adapter._client.moderations.create.return_value = _make_moderation_response(
-        flagged=True, max_score=0.95
+def test_predict_harmful_via_logprobs():
+    adapter = ShieldGemmaAdapter()
+    # Yes (harmful) has higher logprob
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_ollama_response(
+        yes_logprob=math.log(0.9), no_logprob=math.log(0.1)
     )
-    result = adapter.predict("how to make a bomb")
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=mock_resp):
+        result = adapter.predict("how to make a bomb")
+
     assert result.label == "harmful"
-    assert 0.0 <= result.confidence_score <= 1.0
+    assert result.confidence_score > 0.5
+    assert result.two_token_mass is not None
 
 
-def test_predict_benign():
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
-    adapter._client.moderations.create.return_value = _make_moderation_response(
-        flagged=False, max_score=0.05
+def test_predict_benign_via_logprobs():
+    adapter = ShieldGemmaAdapter()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_ollama_response(
+        yes_logprob=math.log(0.05), no_logprob=math.log(0.95)
     )
-    result = adapter.predict("what is the weather today")
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=mock_resp):
+        result = adapter.predict("what is the weather today")
+
     assert result.label == "benign"
-    assert result.confidence_score >= 0.5
+    assert result.confidence_score > 0.5
 
 
 # ---------------------------------------------------------------------------
-# Test: retry on API errors
+# Test: fallback to text response when logprobs unavailable
 # ---------------------------------------------------------------------------
 
-def test_retries_on_api_error_then_succeeds():
-    """Should retry on APIError and succeed on the third attempt."""
-    from openai import APIError
+def test_predict_fallback_text_harmful():
+    adapter = ShieldGemmaAdapter()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_text_only_response("Yes")
+    mock_resp.raise_for_status = MagicMock()
 
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
+    with patch("requests.post", return_value=mock_resp):
+        result = adapter.predict("harmful content here")
 
-    success_response = _make_moderation_response(flagged=False, max_score=0.1)
-    adapter._client.moderations.create.side_effect = [
-        APIError("error", request=MagicMock(), body=None),
-        APIError("error", request=MagicMock(), body=None),
-        success_response,
-    ]
+    assert result.label == "harmful"
 
-    with patch("time.sleep"):
-        result = adapter.predict("test input")
+
+def test_predict_fallback_text_benign():
+    adapter = ShieldGemmaAdapter()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_text_only_response("No")
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=mock_resp):
+        result = adapter.predict("benign content here")
 
     assert result.label == "benign"
-    assert adapter._client.moderations.create.call_count == 3
 
 
-def test_raises_after_all_retries_exhausted():
-    """Should raise RuntimeError after 3 failed attempts."""
-    from openai import APIError
+# ---------------------------------------------------------------------------
+# Test: RuntimeError on Ollama failure
+# ---------------------------------------------------------------------------
 
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
-    adapter._client.moderations.create.side_effect = APIError(
-        "persistent error", request=MagicMock(), body=None
-    )
+def test_raises_on_ollama_failure():
+    import requests as req
+    adapter = ShieldGemmaAdapter()
 
-    with patch("time.sleep"):
-        with pytest.raises(RuntimeError, match="3 retries"):
+    with patch("requests.post", side_effect=req.RequestException("connection refused")):
+        with pytest.raises(RuntimeError, match="Ollama request failed"):
             adapter.predict("test input")
-
-    assert adapter._client.moderations.create.call_count == 3
-
-
-# ---------------------------------------------------------------------------
-# Test: rate limit (429) handling with Retry-After
-# ---------------------------------------------------------------------------
-
-def test_respects_retry_after_header():
-    """Should wait for Retry-After seconds on 429 RateLimitError."""
-    from openai import RateLimitError
-
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
-
-    # Build a RateLimitError with a Retry-After header
-    mock_response = MagicMock()
-    mock_response.headers = {"retry-after": "5"}
-    rate_limit_err = RateLimitError(
-        "rate limited", response=mock_response, body=None
-    )
-    success_response = _make_moderation_response(flagged=False, max_score=0.1)
-    adapter._client.moderations.create.side_effect = [rate_limit_err, success_response]
-
-    sleep_calls = []
-    with patch("time.sleep", side_effect=lambda s: sleep_calls.append(s)):
-        result = adapter.predict("test input")
-
-    assert result.label == "benign"
-    # Should have slept for the Retry-After value (5s), not the default backoff (1s)
-    assert any(s == 5.0 for s in sleep_calls), (
-        f"Expected 5.0s sleep, got: {sleep_calls}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,20 +112,9 @@ def test_respects_retry_after_header():
 
 @pytest.mark.parametrize("bad_input", [None, "", "   "])
 def test_raises_on_invalid_input(bad_input):
-    adapter = OpenAIModerationAdapter()
-    adapter._client = MagicMock()
+    adapter = ShieldGemmaAdapter()
     with pytest.raises(ValueError):
         adapter.predict(bad_input)
-
-
-# ---------------------------------------------------------------------------
-# Test: RuntimeError when client not initialized
-# ---------------------------------------------------------------------------
-
-def test_raises_when_not_loaded():
-    adapter = OpenAIModerationAdapter()
-    with pytest.raises(RuntimeError, match="not initialized"):
-        adapter.predict("test")
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +122,50 @@ def test_raises_when_not_loaded():
 # ---------------------------------------------------------------------------
 
 def test_confidence_source():
-    adapter = OpenAIModerationAdapter()
-    assert adapter.confidence_source == "category_scores"
-    assert adapter.confidence_source_type == "api_score"
+    adapter = ShieldGemmaAdapter()
+    assert adapter.confidence_source == "logits_softmax"
+    # ShieldGemma is logit-based — directly comparable to other local models
+    assert adapter.confidence_source_type == "logits_softmax"
+
+
+# ---------------------------------------------------------------------------
+# Test: model name and format_prompt
+# ---------------------------------------------------------------------------
+
+def test_get_model_name():
+    adapter = ShieldGemmaAdapter()
+    assert "ShieldGemma" in adapter.get_model_name()
+    assert "Ollama" in adapter.get_model_name()
+
+
+def test_format_prompt_applies_template():
+    adapter = ShieldGemmaAdapter()
+    raw = "how to make a bomb"
+    formatted = adapter.format_prompt(raw)
+    assert raw in formatted
+    assert formatted != raw  # Template was applied
+
+
+# ---------------------------------------------------------------------------
+# Test: load_model health check
+# ---------------------------------------------------------------------------
+
+def test_load_model_warns_if_model_missing():
+    adapter = ShieldGemmaAdapter()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"models": [{"name": "llama3.1:8b"}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.get", return_value=mock_resp):
+        # Should not raise — just logs a warning
+        adapter.load_model()
+
+
+def test_load_model_succeeds_when_model_available():
+    adapter = ShieldGemmaAdapter()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"models": [{"name": "shieldgemma:9b"}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.get", return_value=mock_resp):
+        adapter.load_model()  # Should not raise

@@ -7,6 +7,14 @@ Orchestrates the full pipeline:
 Usage:
     python -m src.main --config config.yaml
 
+Hardware profiles (set in config.yaml):
+  Mac Studio M3 Ultra (96GB): parallel_loading=true  → ~50-60 min total
+  MacBook Pro M4 Pro (32GB):  parallel_loading=false → ~3 hours total
+
+LLM generation & validation: Ollama (qwen2.5:14b) — no API keys required.
+  Start Ollama: ollama serve
+  Pull models:  ollama pull qwen2.5:14b && ollama pull shieldgemma:9b
+
 Key sequencing:
 - Pilot (Task 11) runs BEFORE full experiment (Task 13)
 - Dev split used for all exploratory analysis and post-hoc calibration fitting
@@ -26,11 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_pipeline(config_path: str) -> None:
-    """Run the full calibration evaluation pipeline.
-
-    Args:
-        config_path: Path to config.yaml.
-    """
+    """Run the full calibration evaluation pipeline."""
     from src.models import ExperimentConfig
     from src.utils.reproducibility import log_environment, set_global_seeds
 
@@ -44,26 +48,57 @@ def run_pipeline(config_path: str) -> None:
 
     # 2. Initialize reproducibility BEFORE any computation
     set_global_seeds(config.random_seed)
-    env_start = log_environment()
+    log_environment()
 
-    # 3. Initialize components
+    # 3. Initialize Ollama client
+    from src.utils.ollama_client import OllamaClient
+    ollama_cfg = getattr(config, "ollama", {}) or {}
+    if isinstance(ollama_cfg, dict):
+        ollama_url = ollama_cfg.get("base_url", "http://localhost:11434")
+        gen_model = ollama_cfg.get("generation_model", "qwen2.5:14b")
+    else:
+        ollama_url = "http://localhost:11434"
+        gen_model = "qwen2.5:14b"
+
+    ollama_client = OllamaClient(base_url=ollama_url, model=gen_model)
+    if not ollama_client.health_check():
+        logger.warning(
+            "Ollama not available at %s — dataset generation will use placeholders. "
+            "Start Ollama with: ollama serve && ollama pull %s",
+            ollama_url, gen_model,
+        )
+        ollama_client = None
+
+    # 4. Initialize components
     from src.analysis.plots import PlotGenerator
     from src.datasets.builder import DatasetBuilder
     from src.datasets.validator import ValidationPipeline
     from src.evaluation.calibration import CalibrationAnalyzer
     from src.evaluation.runner import ExperimentRunner
 
-    builder = DatasetBuilder()
-    validator = ValidationPipeline()
+    builder = DatasetBuilder(ollama_client=ollama_client)
+    validator = ValidationPipeline(ollama_client=ollama_client)
+
+    # Hardware profile from config
+    hw_cfg = getattr(config, "hardware", {}) or {}
+    if isinstance(hw_cfg, dict):
+        parallel_loading = hw_cfg.get("parallel_loading", False)
+        max_workers = hw_cfg.get("max_parallel_workers", 1)
+    else:
+        parallel_loading = False
+        max_workers = 1
+
     runner = ExperimentRunner(
         checkpoint_frequency=config.checkpoint_frequency,
         temperature=config.temperature,
         random_seed=config.random_seed,
+        parallel_loading=parallel_loading,
+        max_parallel_workers=max_workers,
     )
     analyzer = CalibrationAnalyzer()
     plotter = PlotGenerator()
 
-    # 4. Dataset generation
+    # 5. Dataset generation
     logger.info("=== Phase 1: Dataset Generation ===")
     all_items = []
     for axis in config.axes:
@@ -89,26 +124,31 @@ def run_pipeline(config_path: str) -> None:
         logger.error("No dataset items generated — check seed files in data/seeds/")
         sys.exit(1)
 
-    # 5. Validation
+    # 6. Validation
     logger.info("=== Phase 2: Validation ===")
-    # Note: LLM judge and human review are external processes.
-    # The pipeline scaffolding is in place; actual judge_fn must be provided.
-    logger.info("Validation pipeline ready. Provide judge_fn and human_labels to proceed.")
+    all_items = validator.validate_with_llm_judge(all_items)
+    logger.info("Validation complete — %d items", len(all_items))
 
-    # 6. Dataset split
-    dev_items, test_items = builder.split_dataset(all_items, random_seed=config.random_seed)
-    logger.info("Dataset split: %d dev / %d test", len(dev_items), len(test_items))
+    # 7. Dataset split
+    dev_items, test_items = builder.split_dataset(
+        all_items, random_seed=config.random_seed
+    )
+    logger.info(
+        "Dataset split: %d dev / %d test", len(dev_items), len(test_items)
+    )
 
-    # 7. Load guardrail adapters
+    # 8. Load guardrail adapters
     adapters = _load_adapters(config.guardrails)
     if not adapters:
         logger.error("No adapters loaded — check guardrails config")
         sys.exit(1)
 
-    # 8. Sanity check
+    # 9. Sanity check
     logger.info("=== Phase 3: Sanity Check ===")
     import random
-    sanity_subset = random.sample(all_items, min(config.sanity_check_size, len(all_items)))
+    sanity_subset = random.sample(
+        all_items, min(config.sanity_check_size, len(all_items))
+    )
     try:
         sanity_reports = runner.run_sanity_check(adapters, sanity_subset)
         for report in sanity_reports:
@@ -117,7 +157,7 @@ def run_pipeline(config_path: str) -> None:
         logger.error("Sanity check FAILED: %s", e)
         sys.exit(1)
 
-    # 9. Pilot experiment (MUST run before full experiment)
+    # 10. Pilot experiment (MUST run before full experiment)
     logger.info("=== Phase 4: Pilot Experiment ===")
     pilot_adapters = [a for a in adapters if any(
         name in a.get_model_name() for name in config.pilot_guardrails
@@ -135,40 +175,38 @@ def run_pipeline(config_path: str) -> None:
     else:
         logger.warning("No pilot adapters found — skipping pilot")
 
-    # 10. Full experiment
+    # 11. Full experiment
     logger.info("=== Phase 5: Full Experiment ===")
     all_predictions = runner.run_full_experiment(adapters, all_items)
 
-    # 11. Completeness check
+    # 12. Completeness check
     for guardrail_name, preds in all_predictions.items():
         report = runner.verify_completeness(all_items, preds)
         if report.missing_item_ids:
             logger.warning(
-                "%s: %d missing predictions", guardrail_name, len(report.missing_item_ids)
+                "%s: %d missing predictions",
+                guardrail_name, len(report.missing_item_ids),
             )
 
-    # 12. Analysis (dev split only for exploratory)
+    # 13. Analysis (dev split only for exploratory)
     logger.info("=== Phase 6: Analysis ===")
     for guardrail_name, preds in all_predictions.items():
         dev_preds = [p for p in preds if p.split == "dev"]
         test_preds = [p for p in preds if p.split == "test"]
 
-        # Exploratory on dev
-        dev_ece = analyzer.compute_ece(dev_preds, dev_items)
+        analyzer.compute_ece(dev_preds, dev_items)
         dev_eoe = analyzer.compute_eoe(dev_preds, dev_items)
-        sweep = analyzer.compute_bin_sensitivity_sweep(dev_preds, dev_items)
+        analyzer.compute_bin_sensitivity_sweep(dev_preds, dev_items)
 
-        # Final metrics on test split ONLY
         test_ece = analyzer.compute_ece(test_preds, test_items)
         test_brier = analyzer.compute_brier_score(test_preds, test_items)
-        test_cc_ece = analyzer.compute_class_conditional_ece(test_preds, test_items)
+        analyzer.compute_class_conditional_ece(test_preds, test_items)
 
         logger.info(
             "%s | test ECE=%.4f | test Brier=%.4f | EOE=%.4f",
             guardrail_name, test_ece.ece, test_brier.brier_score, dev_eoe,
         )
 
-        # Persist predictions
         plotter.persist_predictions(preds, guardrail_name)
         plotter.persist_metrics({
             "guardrail": guardrail_name,
@@ -177,24 +215,31 @@ def run_pipeline(config_path: str) -> None:
             "dev_eoe": dev_eoe,
         }, f"metrics_{guardrail_name.replace(' ', '_')}")
 
-    # 13. Post-hoc calibration (dev split for fitting, test split for evaluation)
+    # 14. Post-hoc calibration
     logger.info("=== Phase 7: Post-hoc Calibration ===")
     from src.evaluation.posthoc import CalibrationTuner
     tuner = CalibrationTuner()
     for guardrail_name, preds in all_predictions.items():
-        dev_preds = [p for p in preds if p.split == "dev" and p.confidence_source_type == "logits_softmax"]
-        test_preds = [p for p in preds if p.split == "test" and p.confidence_source_type == "logits_softmax"]
+        dev_preds = [
+            p for p in preds
+            if p.split == "dev" and p.confidence_source_type == "logits_softmax"
+        ]
+        test_preds = [
+            p for p in preds
+            if p.split == "test" and p.confidence_source_type == "logits_softmax"
+        ]
         if not dev_preds or not test_preds:
             continue
-        result = tuner.fit_platt_scaling(dev_preds, dev_items, test_preds, test_items, guardrail_name)
+        result = tuner.fit_platt_scaling(
+            dev_preds, dev_items, test_preds, test_items, guardrail_name
+        )
         logger.info(
             "%s | Platt residual ECE=%.4f (original=%.4f, structural=%s)",
-            guardrail_name, result.residual_ece, result.original_ece, result.is_structural,
+            guardrail_name,
+            result.residual_ece, result.original_ece, result.is_structural,
         )
 
-    # 14. Log environment at end to detect mid-run changes
-    env_end = log_environment()
-
+    log_environment()
     logger.info("=== Pipeline Complete ===")
 
 
@@ -229,9 +274,9 @@ def _get_adapter(name: str):
     elif "nemo" in name_lower:
         from src.guardrails.nemoguard import NemoGuardAdapter
         return NemoGuardAdapter()
-    elif "openai" in name_lower:
-        from src.guardrails.openai_moderation import OpenAIModerationAdapter
-        return OpenAIModerationAdapter()
+    elif "shieldgemma" in name_lower:
+        from src.guardrails.shieldgemma import ShieldGemmaAdapter
+        return ShieldGemmaAdapter()
     else:
         logger.warning("Unknown guardrail: %s", name)
         return None

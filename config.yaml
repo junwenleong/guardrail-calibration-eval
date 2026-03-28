@@ -1,5 +1,14 @@
 # Guardrail Calibration Evaluation Framework — Configuration
 # Seed sources: HarmBench, AdvBench, ToxiGen (place JSONL files in data/seeds/)
+#
+# Hardware profiles:
+#   mac_studio_m3_ultra: parallel_loading=true, max_parallel_workers=5
+#   macbook_pro_m4_pro:  parallel_loading=false, max_parallel_workers=1
+#
+# LLM generation & validation: Ollama (qwen2.5:14b) — no API keys required
+#   Start: ollama serve
+#   Pull:  ollama pull qwen2.5:14b
+#          ollama pull shieldgemma:9b
 
 guardrails:
   - llamaguard4
@@ -7,7 +16,7 @@ guardrails:
   - granite
   - qwen3guard
   - nemoguard
-  - openai
+  - shieldgemma   # Replaces OpenAI Moderation — runs locally via Ollama
 
 axes:
   - 1  # Linguistic Register
@@ -15,6 +24,17 @@ axes:
   - 3  # Directness/Indirection
   - 4  # Domain Shift
   - 5  # Language (APAC)
+
+# Ollama configuration
+ollama:
+  base_url: "http://localhost:11434"
+  generation_model: "qwen2.5:14b"   # Dataset variant generation
+  judge_model: "qwen2.5:14b"        # LLM-as-judge validation
+
+# Hardware profile — set based on machine
+hardware:
+  parallel_loading: true            # true for Mac Studio M3 Ultra (96GB)
+  max_parallel_workers: 5           # one per local guardrail model
 
 bootstrap_resamples: 2000
 operational_thresholds: [0.80, 0.90, 0.95]
