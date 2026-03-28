@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/utils/ollama_client.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.7, 120, '/', 'benign', 'harmful', 'model', 'models', 'name', 'options', 'prompt', 'qwen2.5:14b', 'response', 'stream', 'temperature']

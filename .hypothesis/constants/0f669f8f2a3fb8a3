@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/evaluation/posthoc.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.02, 1.0, 'clip', 'harmful', 'isotonic_regression', 'lbfgs', 'logits_softmax', 'platt_scaling']
