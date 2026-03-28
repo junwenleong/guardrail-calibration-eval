@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/guardrails/granite.py
+# hypothesis_version: 6.151.9
+
+[1024, 'No', 'Unloaded %s', 'Yes', 'auto', 'content', 'logits_softmax', 'no', 'pt', 'role', 'system', 'user', 'yes']

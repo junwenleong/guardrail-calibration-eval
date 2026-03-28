@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/datasets/builder.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.2, 0.3, 0.4, 0.6, 100, 'academic_framing', 'benign', 'coded_slang', 'creative_writing', 'cultural_idioms', 'data/ecological', 'data/seeds', 'dev', 'direct', 'en', 'filial_piety', 'formal_clinical', 'harmful', 'human_collected', 'hypothetical', 'id', 'indirect_implication', 'informal_colloquial', 'items.jsonl', 'legal', 'medical', 'ms', 'pending', 'placeholder', 'roleplay_framing', 'seed', 'singlish', 'soft_indirection', 'technical_jargon', 'technical_security', 'test', 'traditional_medicine', 'zh']

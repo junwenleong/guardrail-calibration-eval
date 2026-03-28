@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/utils/reproducibility.py
+# hypothesis_version: 6.151.9
+
+[':4096:8', 'Environment: %s', 'bitsandbytes_version', 'cpu_count', 'cuda_available', 'cuda_version', 'gpu_count', 'gpu_names', 'mps', 'mps_available', 'not installed', 'platform', 'python_version', 'torch_version', 'transformers_version']

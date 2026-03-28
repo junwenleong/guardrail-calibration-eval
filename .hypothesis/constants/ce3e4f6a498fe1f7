@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/datasets/validator.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.15, 0.2, 0.6, 1.0, 100, 'cohens_kappa', 'disputed', 'pending', 'spearman', 'validated']

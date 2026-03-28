@@ -1,0 +1,33 @@
+# Guardrail Calibration Evaluation Framework — Configuration
+# Seed sources: HarmBench, AdvBench, ToxiGen (place JSONL files in data/seeds/)
+
+guardrails:
+  - llamaguard4
+  - wildguard
+  - granite
+  - qwen3guard
+  - nemoguard
+  - openai
+
+axes:
+  - 1  # Linguistic Register
+  - 2  # Cultural Context (APAC)
+  - 3  # Directness/Indirection
+  - 4  # Domain Shift
+  - 5  # Language (APAC)
+
+bootstrap_resamples: 2000
+operational_thresholds: [0.80, 0.90, 0.95]
+checkpoint_frequency: 500
+sanity_check_size: 100
+
+pilot_guardrails:
+  - llamaguard4
+  - qwen3guard
+pilot_axes: [1, 5]
+pilot_size: 200
+
+quantization_baseline_size: 500
+temperature: 0.0
+api_snapshot_window_hours: 48
+random_seed: 42

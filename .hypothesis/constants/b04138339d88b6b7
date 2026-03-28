@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/evaluation/bootstrap.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-09, 0.05, 0.5, 1.0, 100, 2000, 5000]

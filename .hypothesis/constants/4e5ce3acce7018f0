@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/guardrails/qwen3guard.py
+# hypothesis_version: 6.151.9
+
+[1024, 'Qwen/Qwen3Guard-8B', 'Unloaded %s', 'auto', 'content', 'logits_softmax', 'pt', 'role', 'safe', 'unsafe', 'user']

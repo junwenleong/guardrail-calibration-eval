@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/analysis/plots.py
+# hypothesis_version: 6.151.9
+
+[0.2, 0.3, 0.5, 0.8, '#000000', '#0072B2', '#009E73', '#56B4E9', '#CC79A7', '#D55E00', '#E69F00', '#F0E442', '(', ')', '--', 'ECE', 'Number of Bins (M)', 'RdYlGn_r', 'Reds', 'Saved: %s', 'Shift Level', '_', 'actual_precision', 'auto', 'axis', 'brier_score', 'center', 'ci_upper', 'ece', 'en', 'figures', 'guardrail', 'honest_threshold', 'id', 'metrics', 'model_versions', 'ms', 'o', 'pdf', 'predictions', 'random_seed', 'red', 'results', 'run_metadata', 'shift_level', 'target_precision', 'tight', 'upper left', 'w', 'zh']

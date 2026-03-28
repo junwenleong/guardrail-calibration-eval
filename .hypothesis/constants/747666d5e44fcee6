@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/guardrails/openai_moderation.py
+# hypothesis_version: 6.151.9
+
+[1.0, 2.0, 4.0, 'benign', 'category_scores', 'harmful', 'retry-after']

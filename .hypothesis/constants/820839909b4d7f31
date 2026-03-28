@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/guardrails/wildguard.py
+# hypothesis_version: 6.151.9
+
+[0.5, 1.0, 1024, 'Unloaded %s', 'WildGuard-7B (4-bit)', 'allenai/wildguard', 'auto', 'benign', 'harmful', 'native_safety_score', 'no', 'pt', 'yes']

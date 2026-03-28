@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/guardrails/base.py
+# hypothesis_version: 6.151.9
+
+[0.5, 'api_score', 'benign', 'category_scores', 'harmful', 'logits_softmax', 'native_safety_score', 'safe_logit', 'unsafe_logit']

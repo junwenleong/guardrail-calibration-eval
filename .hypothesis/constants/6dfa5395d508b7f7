@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/evaluation/runner.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.01, 0.05, 0.5, 1.0, 1.5, 500.0, 4096.0, 500, 1000, 1024, '%s: %s', '.tmp', 'HALT: %s — %s', 'length_bias_detected', 'mean_length_all', 'mean_length_missing', 'mps', 'records', 'results/checkpoints', 'start']

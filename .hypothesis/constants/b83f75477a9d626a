@@ -1,0 +1,4 @@
+# file: /Users/junwenleong/projects/Guardrail Calibration Under Distribution Shift/src/models.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.5, 0.8, 0.9, 0.95, 1.0, 100, 200, 500, 2000, 'DatasetItem', 'ExperimentConfig', 'adaptive', 'ambiguous', 'api_score', 'axes list is empty', 'benign', 'dev', 'disputed', 'ecological_source', 'equal_width', 'harmful', 'llamaguard4', 'logits_softmax', 'native_safety_score', 'pending', 'qwen3guard', 'test', 'validated', 'western_norm_flag']
